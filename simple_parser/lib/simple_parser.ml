@@ -11,6 +11,8 @@ type token =
   | OP_EQ             (* '=' *)
   | OP_PLUS           (* '+' *)
   | OP_MINUS          (* '-' *)
+  | OP_MULT           (* '*' *)
+  | OP_DIV            (* '/' *)
 
 let compare_token t1 t2 =
   match t1, t2 with
@@ -20,7 +22,9 @@ let compare_token t1 t2 =
   | KW_IN, KW_IN
   | OP_EQ, OP_EQ
   | OP_PLUS, OP_PLUS
-  | OP_MINUS, OP_MINUS -> true
+  | OP_MINUS, OP_MINUS
+  | OP_MULT, OP_MULT
+  | OP_DIV, OP_DIV -> true
   | _ -> false
 
 let pp_token fmt token =
@@ -32,6 +36,8 @@ let pp_token fmt token =
   | OP_EQ -> F.fprintf fmt "="
   | OP_PLUS -> F.fprintf fmt "+"
   | OP_MINUS -> F.fprintf fmt "-"
+  | OP_MULT -> F.fprintf fmt "*"
+  | OP_DIV -> F.fprintf fmt "/"
 
 let pp_tokens fmt tokens =
   F.fprintf fmt "[%a]"
@@ -90,6 +96,8 @@ let lex (s: string) : token =
   | "=" -> OP_EQ
   | "+" -> OP_PLUS
   | "-" -> OP_MINUS
+  | "*" -> OP_MULT
+  | "/" -> OP_DIV
   | _ ->
       let clist : char list = String.to_seq s |> List.of_seq in
       try
@@ -106,6 +114,8 @@ type expr =
   | LetIn of string * expr * expr   (* KW_LET IDENT OP_EQ e KW_IN e *)
   | Plus of expr * expr             (* e OP_PLUS e *)
   | Minus of expr * expr            (* e OP_MINUS e *)
+  | Mult of expr * expr             (* e OP_MULT e *)
+  | Div of expr * expr              (* e OP_DIV e *)
   | Num of string                   (* NUMBER *)
   | Id of string                    (* IDENT *)
 
@@ -116,7 +126,9 @@ let rec compare_expr e1 e2 =
       && compare_expr ex1 ex3
       && compare_expr ex2 ex4
   | Plus (e1, e2), Plus (e3, e4)
-  | Minus (e1, e2), Minus (e3, e4) ->
+  | Minus (e1, e2), Minus (e3, e4)
+  | Mult (e1, e2), Mult (e3, e4)
+  | Div (e1, e2), Div (e3, e4) ->
       compare_expr e1 e3
       && compare_expr e2 e4
   | Num s1, Num s2
@@ -132,6 +144,10 @@ let rec pp_expr fmt e =
       F.fprintf fmt "(%a + %a)" pp_expr e1 pp_expr e2
   | Minus (e1, e2) ->
       F.fprintf fmt "(%a - %a)" pp_expr e1 pp_expr e2
+  | Mult (e1, e2) ->
+      F.fprintf fmt "(%a * %a)" pp_expr e1 pp_expr e2
+  | Div (e1, e2) ->
+      F.fprintf fmt "(%a / %a)" pp_expr e1 pp_expr e2
   | Num n ->
       F.fprintf fmt "%s" n
   | Id s ->
@@ -180,7 +196,9 @@ let token_to_elem (t : token) : parse_stack_elem =
   | KW_IN
   | OP_EQ
   | OP_PLUS
-  | OP_MINUS -> T t
+  | OP_MINUS
+  | OP_MULT
+  | OP_DIV -> T t
 
 let shift (elem : parse_stack_elem) (stack : PStack.t) : PStack.t =
   PStack.push elem stack
@@ -210,6 +228,10 @@ let transfer
                 let s' = PStack.push (E (Minus (e1, e2))) s in
                 s', tokens
 
+            | E e2 :: T OP_MULT :: E e1 :: s ->
+                let s' = PStack.push (E (Mult (e1, e2))) s in s', tokens
+            | E e2 :: T OP_DIV :: E e1 :: s ->
+                let s' = PStack.push (E (Div (e1, e2))) s in s', tokens
             | _ ->
                 (* Fail: Input buffer is empty, but there is not exactly one expr on the stack. *)
                 failwith (F.asprintf "Parsing error: %s" input)
@@ -219,6 +241,11 @@ let transfer
           (* If input buffer is not empty => reduce or shift *)
           begin
             match token, s with
+            (* KW_IN forces reduction of all arithmetic operators *)
+            | T KW_IN, (E e2 :: T OP_MULT :: E e1 :: s) ->
+                let s' = PStack.push (E (Mult (e1, e2))) s in s', tokens
+            | T KW_IN, (E e2 :: T OP_DIV :: E e1 :: s) ->
+                let s' = PStack.push (E (Div (e1, e2))) s in s', tokens
             | T KW_IN, (E e2 :: T OP_PLUS :: E e1 :: s) ->
                 (* Reduce the top 3 stack elements to a Plus expression *)
                 let s' = PStack.push (E (Plus (e1, e2))) s in
@@ -229,6 +256,13 @@ let transfer
                 let s' = PStack.push (E (Minus (e1, e2))) s in
                 s', tokens
 
+            (* When lookahead is + or -, reduce any arithmetic operator on stack first (left-associative & precedence) *)
+            | T OP_PLUS, (E e2 :: T OP_MULT :: E e1 :: s)
+            | T OP_MINUS, (E e2 :: T OP_MULT :: E e1 :: s) ->
+                let s' = PStack.push (E (Mult (e1, e2))) s in s', tokens
+            | T OP_PLUS, (E e2 :: T OP_DIV :: E e1 :: s)
+            | T OP_MINUS, (E e2 :: T OP_DIV :: E e1 :: s) ->
+                let s' = PStack.push (E (Div (e1, e2))) s in s', tokens
             | T OP_PLUS, (E e2 :: T OP_PLUS :: E e1 :: s)
             | T OP_MINUS, (E e2 :: T OP_PLUS :: E e1 :: s) ->
                 (* Reduce, since + is left-associative *)
@@ -240,6 +274,14 @@ let transfer
                 (* Reduce, since - is left-associative *)
                 let s' = PStack.push (E (Minus (e1, e2))) s in
                 s', tokens
+
+            (* When lookahead is * or /, reduce ONLY if stack top is * or / (left-associative) *)
+            | T OP_MULT, (E e2 :: T OP_MULT :: E e1 :: s)
+            | T OP_DIV, (E e2 :: T OP_MULT :: E e1 :: s) ->
+                let s' = PStack.push (E (Mult (e1, e2))) s in s', tokens
+            | T OP_MULT, (E e2 :: T OP_DIV :: E e1 :: s)
+            | T OP_DIV, (E e2 :: T OP_DIV :: E e1 :: s) ->
+                let s' = PStack.push (E (Div (e1, e2))) s in s', tokens
 
             | _ ->
                 (* Other Cases : shift *)
