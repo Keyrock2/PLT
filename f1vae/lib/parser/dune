@@ -1,0 +1,6 @@
+(library
+  (name parser)
+  (wrapped false))
+
+(ocamllex lexer)
+(menhir (modules grammar))

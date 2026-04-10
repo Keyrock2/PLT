@@ -1,0 +1,4 @@
+(library
+ (name f1vae)
+ (wrapped false)
+ (libraries parser))
