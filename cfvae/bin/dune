@@ -1,0 +1,4 @@
+(executable
+ (public_name cfvae)
+ (name main)
+ (libraries cfvae))

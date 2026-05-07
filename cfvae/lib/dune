@@ -1,0 +1,4 @@
+(library
+ (name cfvae)
+ (wrapped false)
+ (libraries parser))
